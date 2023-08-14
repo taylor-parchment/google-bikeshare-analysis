@@ -282,8 +282,9 @@ member | spring | 11.8489144315961 | 830026
 member | summer | 13.3845952269197 | 1244228
 member | winter | 10.3222802503794 | 434540
 
+We can see that ride length peaks in spring and summer, and the total number of rides in summer is significantly higher, especially for casual members. The same difference exists between seasons for members, but it is less pronounced.
 
-
+```
 ride_distance_km AS (
 SELECT *,
 ROUND(
@@ -296,23 +297,15 @@ ROUND(
 )	AS distance_km
 FROM season
 )
+```
 
 This query implements the Haversine formula (https://www.movable-type.co.uk/scripts/latlong.html) to calculate distance between two lat/long points. 
 
 There are limitations to applying this here. It is likely that most, if not all bike trips did not take a straight path from start location to end location. Many trips have the same start and end station, suggesting some people take a circular path and return to their start point. The distance we are calculating here is only the distance between the start and end points, not the ride distance. However, I think with the amount of data, this information is still useful, as we can distinguish between effective distance traveled between rider types.
 
- CASE CAST (strftime('%w', started_at) AS INTEGER)
-  WHEN 0 THEN 'Sunday'
-  WHEN 1 THEN 'Monday'
-  WHEN 2 THEN 'Tuesday'
-  WHEN 3 THEN 'Wednesday'
-  WHEN 4 THEN 'Thursday'
-  WHEN 5 THEN 'Friday'
-  ELSE 'Saturday' END AS day_of_week,
+At this point I want to organize my queries and look at the distance data.
 
-This will label the day of the week of each trip.
-For easier querying I will combine some of these into a larger query.
-
+```
 WITH analysis AS (
 SELECT *,
 
@@ -358,47 +351,211 @@ SELECT ride_id, distance_km
 FROM analysis
 ORDER BY 2 DESC
 LIMIT 100;
+```
 
-
-
-42AF82C53D831251
-9814.069
-E9495F1DC3475D41
-9813.378
-6AFE1471227BD76F
-9813.072
-75DE33501313D0CE
-9812.918
-7F49424E860E7094
-9812.916
-BB8AA29838266294
-9812.174
-3B47B333C0D186F0
-9811.811
-0A6988FE859F4D54
-9811.511
-353B37694B30396F
-42.272
-5CE2D7C544D25B78
-37.679
-D2A9A1120A165B1F
-36.943
-868D605CA8265D9C
-36.512
+ride_id | distance_km
+--- | ---
+42AF82C53D831251 | 9814.069
+E9495F1DC3475D41 | 9813.378
+6AFE1471227BD76F | 9813.072
+75DE33501313D0CE | 9812.918
+7F49424E860E7094 | 9812.916
+BB8AA29838266294 | 9812.174
+3B47B333C0D186F0 | 9811.811
+0A6988FE859F4D54 | 9811.511
+353B37694B30396F | 42.272
+5CE2D7C544D25B78 | 37.679
+D2A9A1120A165B1F | 36.943
+868D605CA8265D9C | 36.512
 
 
 Checking the maximum distance trips for all members, we get some huge outliers, which I will delete.
 
+```
+DELETE FROM bike_data
+WHERE DELETE FROM bike_data
+WHERE   ROUND(
+6371.0 * 2 * ASIN(
+        SQRT(
+            POWER(SIN(RADIANS(end_lat - start_lat) / 2), 2) +
+            COS(RADIANS(start_lat)) * COS(RADIANS(end_lat)) * POWER(SIN(RADIANS(end_lng - start_lng) / 2), 2)
+        )
+    ), 3
+) > 1000
+```
 
+Lets compare the distances traveled by casual riders and members.
 
+```
+SELECT member_casual, season, AVG(distance_km)
+FROM analysis
+GROUP BY 1, 2
+```
 
+member_casuall | season | AVG(distance_km)
+--- | --- | ---
+casual | fall | 2.08028410437242
+casual | spring | 2.12961618933636
+casual | summer | 2.22185769113823
+casual | winter | 1.70362363451131
+member | fall | 2.04519642790402
+member | spring | 2.03557386154141
+member | summer | 2.24268134779194
+member | winter | 1.78462319003989
 
+Unfortunately, this doesn't seem to tell us any difference between casual and member riders. We see a very similar difference across seasons. Let's check days of the week.
 
-number of trips by season, member
-number of trips by day of week, member
-length of trip by season, member
-length of trip by day of week, member
+```
+SELECT member_casual, day_of_week, AVG(distance_km)
+FROM analysis
+WHERE length_min > 2
+GROUP BY 2, 1
+```
 
+member_casual | day_of_week | AVG(distance_km)
+--- | --- | ---
+casual | Friday | 2.19974230842338
+member	|Friday	|2.14104397653398
+casual	|Monday	|2.12391253118103
+member	|Monday|2.11012696304684
+casual	|Saturday|2.34156488673377
+member	|Saturday|2.28122326456628
+casual|	Sunday	|2.28943763031016
+member	|Sunday|2.23130197977089
+casual	|Thursday|2.17050848159827
+member	|Thursday	|2.17890881391705
+casual|	Tuesday	|2.126216022268
+member|	Tuesday	|2.14879035813415
+casual|	Wednesday	|2.13331108927818
+member	|Wednesday	|2.16588502028407
 
+While the difference is small, we can at least see that casual members tend to ride a longer distance than members on the weekends.
+Lastly, let's check max rides for each day of the week. 
 
-Popular stations —
+```
+SELECT member_casual, day_of_week, MAX(distance_km)
+FROM analysis
+WHERE length_min > 2
+GROUP BY 2, 1
+```
+member_casual|day_of_week|MAX(distance_km)
+---|---|---
+casual|Friday|30.186
+member|Friday|27.694
+casual|Monday|36.512
+member|Monday|36.943
+casual|Saturday|30.507
+member|Saturday|29.421
+casual|Sunday|30.691
+member|Sunday|30.156
+casual|Thursday|33.83
+member|Thursday|42.272
+casual|Tuesday|28.036
+member|Tuesday|30.315
+casual|Wednesday|29.16
+member|Wednesday|37.679
+
+The same trend is present here, but it's a little more obvious when looking at the maximum trips for each day.
+
+```
+SELECT season, day_of_week, member_casual, AVG(distance_km)
+FROM analysis
+WHERE length_min > 2
+GROUP BY 1, 2, 3
+```
+
+The same holds true across all seasons.
+
+I'm glad I investigated distance, but I think it's less informative in this case than length of trip, so let's look one more time at length of trip including the day of the week.
+
+```
+SELECT day_of_week, member_casual, AVG(length_min)
+FROM analysis
+WHERE length_min > 2
+GROUP BY 1, 2
+```
+
+day_of_week | member_casual | AVG(length_min)
+--- | --- | ---
+Friday	|casual	|20.9142775263414
+Friday	|member	|12.6084126208969
+Monday	|casual	|22.2234866571715
+Monday	|member	|12.2438568703657
+Saturday	|casual	|24.5452606616136
+Saturday	|member	|14.1982794934251
+Sunday	|casual	|25.2226260063945
+Sunday	|member	|14.1128623937637
+Thursday	|casual	|19.6149592230851
+Thursday	|member	|12.3753419384358
+Tuesday	|casual	|19.7165297796078
+Tuesday	|member	|12.198289433556
+Wednesday	|casual	|18.8633504141769
+Wednesday	|member	|12.1732410671717
+
+When comparing time and distance, it's clear that casual members ride for a much longer time, but don't cover significantly more distance than members. As one would expect, members usually ride to get somewhere, whereas casual riders ride for enjoyment.
+
+I also want to look into the most popular stations. Knowing the stations casual members use the most will allow for targeted ads.
+
+```
+WITH  popular_stations_casual AS (
+SELECT start_station_name, RANK() OVER(ORDER BY COUNT(*) DESC) AS count_rank
+FROM bike_data
+WHERE member_casual = "casual" AND start_station_name IS NOT NULL
+GROUP BY 1
+ORDER BY COUNT(*) DESC
+LIMIT 20
+)
+
+SELECT popular_stations_casual.count_rank, popular_stations_casual.start_station_name, bike_data.member_casual, COUNT(*)
+FROM popular_stations_casual
+JOIN bike_data
+ON popular_stations_casual.start_station_name = bike_data.start_station_name
+GROUP BY 2, 3
+ORDER BY 1
+```
+
+This query looks at the 20 most popular stations by casual riders, and then compares them to members for reference.
+rank | start_station_name | member_casual | COUNT(*)
+---|---|---|---
+1|Streeter Dr & Grand Ave|casual|57180
+1|Streeter Dr & Grand Ave|member|17443
+2|DuSable Lake Shore Dr & Monroe St|casual|31922
+2|DuSable Lake Shore Dr & Monroe St|member|9357
+3|Michigan Ave & Oak St|casual|25340
+3|Michigan Ave & Oak St|member|14959
+4|Millennium Park|casual|25142
+4|Millennium Park|member|9717
+5|DuSable Lake Shore Dr & North Blvd|casual|23628
+5|DuSable Lake Shore Dr & North Blvd|member|16530
+6|Shedd Aquarium|casual|20345
+6|Shedd Aquarium|member|5024
+7|Theater on the Lake|casual|18451
+7|Theater on the Lake|member|14881
+8|Wells St & Concord Ln|casual|16463
+8|Wells St & Concord Ln|member|22079
+9|Dusable Harbor|casual|14186
+9|Dusable Harbor|member|5392
+10|Indiana Ave & Roosevelt Rd|casual|13832
+10|Indiana Ave & Roosevelt Rd|member|14074
+11|Clark St & Armitage Ave|casual|13743
+11|Clark St & Armitage Ave|member|15869
+12|Clark St & Lincoln Ave|casual|13240
+12|Clark St & Lincoln Ave|member|14257
+13|Clark St & Elm St|casual|13063
+13|Clark St & Elm St|member|23314
+14|Montrose Harbor|casual|12794
+14|Montrose Harbor|member|8059
+15|Broadway & Barry Ave|casual|12465
+15|Broadway & Barry Ave|member|18592
+16|Wells St & Elm St|casual|12445
+16|Wells St & Elm St|member|19877
+17|Clark St & Newport St|casual|12399
+17|Clark St & Newport St|member|12477
+18|Wilton Ave & Belmont Ave|casual|11886
+18|Wilton Ave & Belmont Ave|member|16403
+19|Wabash Ave & Grand Ave|casual|11626
+19|Wabash Ave & Grand Ave|member|16178
+20|Adler Planetarium|casual|11575
+20|Adler Planetarium|member|4743
+
+We can see that, for the most part, of the top 20 stations used by casuals, they're generally saught after a lot more than members. 
