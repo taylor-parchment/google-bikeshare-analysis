@@ -11,3 +11,7 @@ The case study gives this information about the company:
   * annual members are much more profitable than casual riders
 
 The company's goal and reason for the analysis: design marketing strategies aimed at converting casual riders into annual members.
+
+The data for this project is available [here](https://divvy-tripdata.s3.amazonaws.com/index.html).
+I'm using one year of data from 2022-05 until 2023 - 04.
+The total size of this year's worth of data is over 2 gigabytes, so I will do the majority of the analysis in SQL (sqlite running on my personal computer). I will create visualiztions using Tableau, and summarize my findings in a slides presentation.
