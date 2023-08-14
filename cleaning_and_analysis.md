@@ -382,7 +382,7 @@ WHERE   ROUND(
 ) > 1000
 ```
 
-Lets compare the distances traveled by casual riders and members.
+Let's compare the distances traveled by casual riders and members.
 
 ```
 SELECT member_casual, season, AVG(distance_km)
@@ -556,4 +556,38 @@ rank | start_station_name | member_casual | COUNT(*)
 20|Adler Planetarium|casual|11575
 20|Adler Planetarium|member|4743
 
-We can see that, for the most part, of the top 20 stations used by casuals, they're generally saught after a lot more than members. 
+We can see that, for the most part, of the top 20 stations used by casuals, they're generally saught after a lot more than members.
+
+Lastly, I want to look at the most popular routes that members take. I think it would be useful for advertising to know how people are commuting, so that when casual members use those stations, they can be shown how they could ride a bike every day to get somewhere useful.
+
+```
+SELECT
+     -- select unique sets of stations by creating a route with standard formatting
+    CASE WHEN start_station_name < end_station_name 
+	THEN start_station_name || ' < > ' || end_station_name
+	ELSE end_station_name || ' < > ' || start_station_name
+	END AS route,
+    COUNT(*) AS route_count
+FROM bike_data
+WHERE member_casual = 'member'
+AND start_station_name IS NOT NULL
+AND end_station_name IS NOT NULL
+GROUP BY route
+ORDER BY route_count DESC
+LIMIT 10;
+```
+
+route | route_count
+--- | ---
+Ellis Ave & 60th St < > University Ave & 57th St	|12727
+Ellis Ave & 55th St < > Ellis Ave & 60th St	|11484
+Calumet Ave & 33rd St < > State St & 33rd St	|7818
+Loomis St & Lexington St < > Morgan St & Polk St	|6857
+Kimbark Ave & 53rd St < > University Ave & 57th St	|5105
+Halsted St & Polk St < > Loomis St & Lexington St	|4099
+Ellis Ave & 58th St < > Ellis Ave & 60th St	|4050
+Ellis Ave & 55th St < > Kimbark Ave & 53rd St	|3645
+MLK Jr Dr & 29th St < > State St & 33rd St	|3517
+Lake Park Ave & 56th St < > University Ave & 57th St	|3464
+
+Even though these stations don't appear to overlap greatly with the most common stations used by casual riders, when casual riders use these stations, they could be shown a convenient commute route taken by bike members.
