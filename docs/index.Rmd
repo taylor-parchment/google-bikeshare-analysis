@@ -1,0 +1,823 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+---
+
+This is an updated version of my original capstone project for the Google Data Analytics certification program. I want to change a few things about my original project:
+
+- execute the SQL queries using R so I can display the results of my queries instead of copy/pasted tables
+- write some conclusions to the analysis
+- create some visualizations in R and Tableau
+
+Here is the original assignment description from the Google Data Analytics case study:
+
+```
+You are a junior data analyst working in the marketing analyst team at Cyclistic, a bike-share company in Chicago. The director of marketing believes the company’s future success depends on maximizing the number of annual memberships. Therefore, your team wants to understand how casual riders and annual members use Cyclistic bikes differently. From these insights, your team will design a new marketing strategy to convert casual riders into annual members. But first, Cyclistic executives must approve your recommendations, so they must be backed up with compelling data insights and professional data visualizations.
+
+- 5,824 bicycles and 692 docking stations across Chicago
+- about 30% of users use the bikes to commute to work each day
+- single-ride passes, full-day passes, and annual memberships available
+- annual members are much more profitable than casual riders
+- The company's goal and reason for the analysis: design marketing strategies aimed at converting casual riders into annual members.
+```
+The data for this project is available [here](https://divvy-tripdata.s3.amazonaws.com/index.html).
+
+### Libraries and getting data
+
+```{r, message=FALSE}
+library(tidyverse)
+library(scales)
+library(DBI)
+library(RSQLite)
+```
+
+```{r}
+ # initialize database
+db <- dbConnect(RSQLite::SQLite(), "")
+
+# import first month's data
+df <- read_csv("/Users/taylorparchment/Desktop/google_data/202205-divvy-tripdata.csv", show_col_types = FALSE)
+# convert dataframe's date to character before converting to SQL table
+df$started_at <- as.character(df$started_at)
+df$ended_at <- as.character(df$ended_at)
+# add SQL table
+dbWriteTable(db, "bike_data", df) 
+
+months <- c("202206", "202207", "202208", "202209", "202210", "202211", "202212", "202301", "202302", "202303", "202304")
+# append created SQL table with each month's bike data
+for (month in months) {
+  filepath <- paste0("/Users/taylorparchment/Desktop/google_data/", month, "-divvy-tripdata.csv")
+  df <- read_csv(filepath, show_col_types = FALSE)
+  df$started_at <- as.character(df$started_at)
+  df$ended_at <- as.character(df$ended_at)
+  dbAppendTable(db, "bike_data", df)
+}
+```
+
+```{r}
+# check the data
+glimpse(dbGetQuery(db, "SELECT * FROM bike_data LIMIT 5"))
+```
+
+## Data Cleaning
+
+### Latitude and Longitude
+
+First I'll inspect the longitude and latitude data.
+
+```{r}
+# start long / lat nulls
+q <- "
+SELECT COUNT(*) as 'Starting Nulls'
+FROM bike_data
+WHERE start_lat IS NULL
+OR start_lng IS NULL
+"
+dbGetQuery(db, q)
+
+# end long / lat nulls
+q <- "
+SELECT COUNT(*) as 'Ending Nulls'
+FROM bike_data
+WHERE end_lat IS NULL
+OR end_lng IS NULL
+"
+dbGetQuery(db, q)
+```
+
+While no row is missing its start latitude or longitude, 5973 rows are missing end latitude or longitude. However, since this is a very small percent of the overall data (5973 / 5859061 = 0.00101945), it’s probably safe to delete the missing entries. I'll use this for calculating ride distance.
+
+```{r}
+q <- "
+DELETE FROM bike_data
+WHERE end_lat IS NULL
+OR end_lng IS NULL
+"
+dbExecute(db, q)
+```
+
+### Stations Data
+
+While the lat / long data is what I'll need for distance, knowing the popular stations will help us know where we might target ads for casual riders.
+
+```{r}
+q1 <- "
+SELECT COUNT(*) as 'Start Station ID Nulls'
+FROM bike_data
+WHERE start_station_id IS NULL
+"
+
+q2 <- "
+SELECT COUNT(*) as 'End Station ID Nulls'
+FROM bike_data
+WHERE end_station_id IS NULL
+"
+
+dbGetQuery(db, q1)
+dbGetQuery(db, q2)
+```
+
+Stations with a missing start or end station ID account for roughly 23% of the total data, so we cannot delete them.
+
+I will manually take a look at the list of unique stations to see if there are any obvious mistakes. One thing I noticed is a lot of stations that begin with "Public Rack".
+
+```{r}
+q <- "
+SELECT COUNT(DISTINCT start_station_name) as 'Public Rack Count'
+FROM bike_data
+WHERE start_station_name LIKE 'Public Rack%'
+"
+dbGetQuery(db, q)
+```
+
+Do these stations that start with “Public Rack -“ differ from stations that contain just the street name?
+
+```{r}
+# get station names with public rack, and get any existing stations with the same name
+# minus "Public Rack -"
+q <- "
+SELECT DISTINCT start_station_name, 
+CASE
+  WHEN
+    TRIM(start_station_name, 'Public Rack -') IN (SELECT DISTINCT start_station_name FROM bike_data)
+  THEN TRIM(start_station_name, 'Public Rack -')
+  ELSE NULL
+END 'Non-Public Name'
+FROM bike_data
+WHERE start_station_name LIKE 'Public Rack%'
+"
+station_names <- dbGetQuery(db, q)
+head(station_names)
+# total number of stations which have a "Public Rack - " variant and no station without "Public Rack -"
+sum(is.na(station_names))
+```
+
+About half the stations have both "Public Rack" and non "Public Rack" stations, while the other half has only a public variant. Since I can't be sure that they refer to the same stations, I will leave the distinction as is.
+
+
+### Date Data
+
+```{r}
+# check if there are null starting dates
+q <- "
+SELECT COUNT(*) as 'Starting Date Nulls'
+FROM bike_data
+WHERE started_at IS NULL
+"
+dbGetQuery(db, q)
+
+# check if there are null ending dates
+q <- "
+SELECT COUNT(*) as 'Ending Date Nulls'
+FROM bike_data
+WHERE ended_at IS NULL
+"
+dbGetQuery(db, q)
+```
+
+```{r}
+# make sure the data falls within the expected range
+q <- "SELECT  COUNT(*) as 'Trips Within Data Range'
+FROM bike_data
+WHERE started_at BETWEEN '2022-05-01 00:00:00' AND '2023-04-30 23:59:59'
+"
+dbGetQuery(db, q)
+```
+
+```{r}
+# check any rides beyond the range
+q <- "
+SELECT  COUNT(*) as 'Trips Started Beyond Data Range'
+FROM bike_data
+WHERE started_at > '2023-04-30 23:59:59'
+"
+
+dbGetQuery(db, q)
+```
+
+```{r}
+# check any rides before the range
+q <- "
+SELECT  COUNT(*) as 'Trips Started Before Data Range'
+FROM bike_data
+WHERE started_at < '022-05-01 00:00:00'
+"
+dbGetQuery(db, q)
+```
+
+There are no null started_at values and all started_at values are within the timeframe.
+
+
+```{r}
+q <- "
+SELECT  COUNT(*) as 'Ending Outside of Time Range'
+FROM bike_data
+WHERE ended_at NOT BETWEEN '2022-05-01 00:00:00' AND '2023-04-30 23:59:59'
+"
+dbGetQuery(db, q)
+```
+16 trips ended outside of the time frame, but since all start times were before the end of April 2023, we can assume they started before midnight and finished after midnight 2023-04-30, but I will double check.
+
+```{r}
+q <- "
+SELECT started_at, ended_at
+FROM bike_data
+WHERE ended_at > '2023-04-30 23:59:59'
+"
+dbGetQuery(db, q)
+```
+All of these trips either started late on April 30, or started earlier and were exceptionally long.
+
+```{r}
+q <- "
+SELECT COUNT(*) as 'Trips With Later Start than Finish'
+FROM bike_data
+WHERE started_at > ended_at
+"
+dbGetQuery(db, q)
+```
+103 trips appear to have a later start time than finish time, which shouldn't be possible, so I will remove them.
+
+```{r}
+q <- "
+DELETE FROM bike_data
+WHERE started_at > ended_at
+"
+dbExecute(db, q)
+```
+
+Next I'll check for outliers. I will calculate how long each trip was using SQLite's julianday function, which will give us a numerical representation of the date that can be used to find the time difference. I'll look at some of the longest trips.
+
+```{r}
+q <- "
+SELECT started_at, ended_at,  ROUND((julianday(ended_at) - julianday(started_at)) * 24, 2) AS 'time_diff_hours'
+FROM bike_data
+ORDER BY 3 DESC
+LIMIT 20
+"
+dbGetQuery(db, q)
+```
+There are a lot of unreasonably long trips -- I wonder how someone could rent a bike for nearly the entire month of July? One wouldn't expect this to actually be possible with a bike renting service, so I'd like to investigate this a bit more.
+
+```{r}
+# add a column for trip time
+qTimeDiffCol <- "
+ALTER TABLE bike_data
+ADD COLUMN trip_time_hours
+"
+dbExecute(db, qTimeDiffCol)
+
+# set column to difference in hours calculation
+qTimeDiffCalc <- "
+UPDATE bike_data
+SET trip_time_hours = (julianday(ended_at) - julianday(started_at)) * 24
+"
+dbExecute(db, qTimeDiffCalc)
+```
+
+```{r}
+q <- "
+SELECT COUNT(*) as 'Trips Greater than 1 Day'
+FROM bike_data
+WHERE trip_time_hours > 24
+"
+dbGetQuery(db, q)
+```
+
+With this being a very small number of total trips, I think it's safe to delete all trips that lasted longer than 24 hours.
+
+```{r}
+q <- "
+DELETE FROM bike_data
+WHERE trip_time_hours > 24
+"
+dbExecute(db, q)
+```
+
+I'll also check outliers on the shorter end of rides.
+
+```{r}
+# check if any start and end times are the same
+q <- "
+SELECT COUNT(*) as 'Equal Start and End Time'
+FROM bike_data
+WHERE started_at = ended_at
+"
+dbGetQuery(db, q)
+```
+
+These trips were likely incorrectly regiresterd, or had some other issue with the trip. I'll remove them.
+
+```{r}
+q <- "
+DELETE FROM bike_data
+WHERE started_at = ended_at
+"
+dbExecute(db, q)
+```
+
+I'll take a look at some of the shortest rides.
+
+```{r}
+q <- "
+SELECT ROUND(trip_time_hours * 60 * 60) as Seconds, COUNT(*) as 'Total Trips of This Duration'
+FROM bike_data
+GROUP BY 1
+ORDER BY 1
+LIMIT 20
+"
+dbGetQuery(db, q)
+```
+
+With over 30,000 trips lasting less than 10 seconds, I’m hesitant to delete them just for being a short time. I can’t know exactly what caused so many people to rent and then immediately dock their bike, but it could say something about casual members who changed their mind, so despite probably not representing real bike trips, I’ll leave them in the data.
+
+
+### Analysis
+
+
+#### Seasonal data
+
+```{r}
+# average ride length in minutes for member and casual riders
+q <- "
+SELECT member_casual, 
+ROUND(AVG(trip_time_hours * 60), 2) AS 'Average Ride Length (mins)'
+FROM bike_data
+GROUP BY 1
+"
+dbGetQuery(db, q)
+```
+
+Across all seasons, casual riders generally take longer rides than members.
+
+```{r}
+# assign trips appropriate season based on start month
+# then group by member type and season
+q <- '
+WITH season AS (
+SELECT *,
+CASE
+WHEN  strftime("%m", started_at) BETWEEN "03" AND "05"
+THEN "spring"
+WHEN strftime("%m", started_at) BETWEEN "06" AND "08"
+THEN "summer"
+WHEN strftime("%m", started_at) BETWEEN "09" AND "11"
+THEN "fall"
+ELSE "winter" 
+END AS season
+FROM bike_data
+)
+
+SELECT member_casual, season, 
+ROUND(AVG(trip_time_hours * 60), 2) AS "Average Ride Length (mins)", 
+COUNT(*) AS "Total Trips"
+FROM season
+GROUP BY 1, 2
+'
+
+dbGetQuery(db, q)
+```
+Across seasons, the number of casual riders and their average ride length varies greatly, peaking in summer and dropping in winter. Members maintain similar ride lengths across seasons and their number of riders fluctuates less greatly, though they also drop in ride count during winter.
+
+We can see that ride length peaks in spring and summer, and the total number of rides in summer is significantly higher, especially for casual members. The same difference exists between seasons for members, but it is less pronounced.
+
+I'd like to take a look at ridership over all months and make a quick visualization for it.
+
+```{r}
+# same as above, but just looking at the months
+q <- '
+WITH months AS (
+SELECT *,
+strftime("%m", started_at) as "month"
+FROM bike_data
+)
+
+SELECT member_casual, month, 
+ROUND(AVG(trip_time_hours * 60), 2) AS "average_ride_length_mins", 
+COUNT(*) AS "total_trips"
+FROM months
+GROUP BY 1, 2
+'
+
+months_df <- dbGetQuery(db, q)
+```
+
+```{r}
+# plot ridership over the year
+ggplot(months_df, aes(x = month, y = total_trips, group = member_casual, color = member_casual)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Bike Ridership in 2022",
+       subtitle = "Members vs. Causal Riders",
+       y = "Total Trips",
+       x = "Month",
+       color = "Member Type") +
+  theme(legend.position="bottom") +
+  scale_y_continuous(labels = label_number()) +
+  coord_cartesian(ylim = c(0, 450000))
+```
+
+We can see that both casual riders and members greatly prefer to ride in warmer months, however we can see a much sharper jump in July for casual riders, while members quite gradually gain ridership in spring and lose it in fall.
+
+Also, casual ridership drops very low in winter months, particularly December to March, whereas members maintain 150,000 minimum rides per month.
+
+
+```{r}
+# plot ride length over the year
+ggplot(months_df, aes(x = month, y = average_ride_length_mins, group = member_casual, color = member_casual)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Bike Ride Duration in 2022",
+       subtitle = "Members vs. Causal Riders",
+       y = "Average Ride Duration in Minutes",
+       x = "Month",
+       color = "Member Type") +
+  theme(legend.position="bottom") +
+  coord_cartesian(ylim = c(0, 26)) +
+  scale_y_continuous(breaks = seq(0, 30, by = 5))
+```
+
+Here we can see a bigger difference between casual riders and members. Members maintain a similar ride time throughout the year, rising by a few minutes in the warmer months. This is presumably because members mostly use the service to get somewhere, and so their trip times remain consistent, and a small number of them ride for recreation in summer. 
+
+For casual riders however, between the months of March and May, members spend significantly more time riding, with the average time jumping 10 minutes. For them, the average ride duration actually peaks in spring. It may be more pleasant to ride in the warm spring months than the hotter summer months.
+
+#### Day of the week
+
+It would also be informative to compare casual riders and members over the course of the week.
+
+```{r}
+q <- "
+WITH day_of_week AS(
+SELECT *,
+CASE CAST (strftime('%w', started_at) AS INTEGER)
+  WHEN 0 THEN 'Sunday'
+  WHEN 1 THEN 'Monday'
+  WHEN 2 THEN 'Tuesday'
+  WHEN 3 THEN 'Wednesday'
+  WHEN 4 THEN 'Thursday'
+  WHEN 5 THEN 'Friday'
+  ELSE 'Saturday' 
+  END AS day_of_week
+  FROM bike_data)
+  
+SELECT member_casual, day_of_week, 
+ROUND(AVG(trip_time_hours * 60), 2) AS 'average_ride_length_mins', 
+COUNT(*) AS 'total_trips'
+FROM day_of_week
+GROUP BY 1, 2
+"
+
+week_df <- dbGetQuery(db, q)
+week_df$day_of_week <- factor(week_df$day_of_week, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"))
+
+```
+
+```{r}
+# plot ridership over the week
+ggplot(week_df, aes(x = day_of_week, y = total_trips, group = member_casual, color = member_casual)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Bike Ridership Across Week",
+       subtitle = "Members vs. Causal Riders",
+       y = "Total Trips",
+       x = "Day of Week",
+       color = "Member Type") +
+  theme(legend.position="bottom") +
+  scale_y_continuous(labels = label_number()) +
+  coord_cartesian(ylim = c(0, 600000))
+```
+
+If members more often ride their bikes to commute, and casual riders more often ride their bikes for recreation, this is exactly what we'd expect -- higher member ridership during the week, and lower on weekends, and the reverse for casual members.
+
+```{r}
+# plot ride length over the week
+ggplot(week_df, aes(x = day_of_week, y = average_ride_length_mins, group = member_casual, color = member_casual)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Bike Ride Duration Across Week",
+       subtitle = "Members vs. Causal Riders",
+       y = "Ride Duration in Minutes",
+       x = "Day of Week",
+       color = "Member Type") +
+  theme(legend.position="bottom") +
+  coord_cartesian(ylim = c(0, 30))
+```
+We can see that casual riders always ride for longer periods of time than members, but both groups ride longer on the weekend.
+
+#### Time of day
+
+```{r}
+q <- '
+WITH time AS (
+SELECT *,
+strftime("%H", started_at) as "time_hour"
+FROM bike_data
+)
+
+SELECT member_casual, time_hour,
+COUNT(*) AS "total_trips"
+FROM time
+GROUP BY 1, 2
+'
+
+times_df <- dbGetQuery(db, q)
+```
+
+```{r}
+ggplot(times_df, aes(x = time_hour, y = total_trips, group = member_casual, color = member_casual)) +
+  geom_line() +
+  geom_point() +
+  labs(title = "Number of Bike Trips Each Hour in 2022",
+       subtitle = "Members vs. Causal Riders",
+       y = "Total Number of Trips",
+       x = "Hour of Day",
+       color = "Member Type") +
+  theme(legend.position="bottom") +
+  scale_y_continuous(labels = label_number())
+```
+
+This visualization really shows what goes on in both groups -- at 8am we see a relative peak in member riders who commute. Both groups gradually increase and peak at 5pm, with a very sharp peak in member riders. I think it's safe to assume this is a combination of riders commuting home, and members who also want to take a leisurely bike ride.
+
+#### Ride distances
+
+```{r}
+qDistanceCol <- "
+ALTER TABLE bike_data
+ADD COLUMN distance_km
+"
+dbExecute(db, qDistanceCol)
+
+qDistanceCalc <- "
+UPDATE bike_data
+SET distance_km = 
+ROUND(
+6371.0 * 2 * ASIN(
+        SQRT(
+            POWER(SIN(RADIANS(end_lat - start_lat) / 2), 2) +
+            COS(RADIANS(start_lat)) * COS(RADIANS(end_lat)) * POWER(SIN(RADIANS(end_lng - start_lng) / 2), 2)
+        )
+    ), 3
+)
+"
+
+dbExecute(db, qDistanceCalc)
+
+```
+
+This query implements the [Haversine formula](https://www.movable-type.co.uk/scripts/latlong.html) to calculate distance between two lat/long points. 
+
+There are limitations to applying this here. Most, if not all bike trips did not take a straight path from start location to end location. Many trips have the same start and end station, suggesting some people take a circular path and return to their start point. The distance we are calculating here is only the distance between the start and end points, not the ride distance. However, I think with the amount of data, this information is still useful, as we can distinguish between effective distance traveled between rider types.
+
+
+```{r}
+# get highest distance trips
+q <- "
+SELECT ride_id, distance_km
+FROM bike_data
+ORDER BY 2 DESC
+LIMIT 100
+"
+dbGetQuery(db, q)
+```
+
+We have several very large outliers looking at this distance, I think it's safe to assume there's a problem with these 9000+ km trips.
+
+```{r}
+q <- "
+DELETE FROM bike_data
+WHERE distance_km > 1000
+"
+dbExecute(db, q)
+```
+
+Let's compare the distances traveled by casual riders and members.
+
+```{r}
+# get average ride distance for each rider type
+q <- "
+SELECT member_casual, AVG(distance_km)
+FROM bike_data
+GROUP BY 1
+"
+dbGetQuery(db, q)
+```
+Average distances are very close. I would guess both groups take circular and point to point routes.
+
+```{r}
+q <- "
+SELECT member_casual, distance_km
+FROM bike_data
+"
+distance_df <- dbGetQuery(db, q)
+```
+
+```{r}
+# plot the distribution of distance traveled
+ggplot(distance_df, aes(x = distance_km, fill = member_casual)) + 
+  geom_histogram(bins = 300) +
+  scale_y_continuous(labels = label_number()) +
+  coord_cartesian(xlim = c(0, 10)) + 
+  facet_wrap(~member_casual) +
+  labs(title = "Distribution of Ride Distances",
+       subtitle = "Members vs. Casual Riders",
+       x = "Number of Rides",
+       y = "Distance (km)",
+       fill = "Member Type")
+  theme(legend.position="bottom")
+```
+
+Though the number of overall rides in the members group is higher, the distributions between the two groups is similar. The only difference is a notably higher number of casual members' rides end up being 0 kilometers.
+
+```{r}
+# number of riders who return to their starting station
+# effectively 0 km distance
+q <- "
+SELECT member_casual, COUNT(*)
+FROM bike_data
+WHERE start_station_id = end_station_id
+GROUP BY 1
+"
+dbGetQuery(db, q)
+```
+
+#### Popular Stations
+
+I also want to look into the most popular stations. Knowing the stations casual members use the most will let us know what locations would be useful for advertising memberships. First I'll look at the top casual stations and compare them to members for reference.
+
+```{r}
+q <- "
+WITH  popular_stations_casual AS (
+SELECT start_station_name, RANK() OVER(ORDER BY COUNT(*) DESC) AS count_rank
+FROM bike_data
+WHERE member_casual = 'casual' AND start_station_name IS NOT NULL
+GROUP BY 1
+ORDER BY COUNT(*) DESC
+LIMIT 10
+)
+
+SELECT popular_stations_casual.count_rank, popular_stations_casual.start_station_name, bike_data.member_casual, COUNT(*) as count
+FROM popular_stations_casual
+JOIN bike_data
+ON popular_stations_casual.start_station_name = bike_data.start_station_name
+GROUP BY 2, 3
+ORDER BY 1
+"
+
+top_casual_stations_df <- dbGetQuery(db, q)
+```
+
+```{r}
+top_casual_stations_df %>% 
+  mutate(start_station_name = fct_reorder(start_station_name, desc(count_rank))) %>% 
+  ggplot(aes(x = start_station_name, y = count, fill = member_casual)) +
+  geom_col(position = "dodge") +
+  labs(title = "Ride Count of Top Casual Stations in 2022",
+       subtitle = "vs. Member Ride Count",
+       y = "Number of Rides",
+       x = "",
+       fill = "Member Type") +
+  theme(legend.position="bottom") +
+  coord_flip()
+  
+```
+
+Among the top 10 most popular casual stations, most are used a lot more by casual riders more than members, though there are still several thousand rides by members from each station.
+
+Lastly, I want to look at the most popular routes that members take. I think it would be useful for advertising to know how people are commuting, so that when casual members use those stations, they can be shown how they could ride a bike every day to get somewhere useful.
+
+```{r}
+# create a column with the start and end stations together as 'route' for members 
+qRouteCol <- "
+ALTER TABLE bike_data
+ADD COLUMN route
+"
+dbExecute(db, qRouteCol)
+
+qRouteCalc <- "
+UPDATE bike_data
+SET route = 
+CASE 
+WHEN member_casual = 'member'
+AND start_station_name IS NOT NULL
+AND end_station_name IS NOT NULL 
+AND start_station_name != end_station_name 
+THEN start_station_name || '_' || end_station_name
+END
+"
+dbExecute(db, qRouteCalc)
+```
+
+```{r}
+q <- "
+SELECT route, start_station_name, end_station_name, 
+start_lat, start_lng, end_lat, end_lng, 
+COUNT(*) as total_count, 
+ROUND(AVG(distance_km), 2) as avg_distance_km, 
+ROUND(AVG(trip_time_hours * 60), 2) as avg_time_mins
+FROM bike_data
+WHERE route IS NOT NULL
+GROUP BY route
+ORDER BY COUNT(*) DESC
+"
+top_routes <- dbGetQuery(db, q)
+select(head(top_routes, 10), route, total_count)
+```
+
+Even though top member routes don't appear to overlap greatly with the most common stations used by casual riders, when casual riders use these stations, they could be shown a convenient commute route taken by bike members with its corresponding distance and average route time.
+
+
+## Conclusions
+
+  As one might expect, the biggest difference between casual riders and members is definitely the reason for using the bikes. Many **members commute to work** around 8 am, shown by the significant number of rides around that time. However, **casual** riders, using these bikes for recreation, most commonly rent bikes in the **afternoon hours**, peaking at around 5 pm. 
+  
+  All riders prefer to ride in **spring and summer months**, with peak ridership in July. However, members consistently use their bikes in winter months too, maintaining around 150,000 rides per winter month. Casual riders drop significantly in winter, to below 50,000 per month. All riders take longer trips in warmer months, but **casual riders ride particularly longer in May.** Casual riders take most trips during the weekend, while members take more trips during weekdays.
+  
+  There isn't a significant difference in distance covered by members or casual riders, however casual riders more often **return to their station of origin**, probably only riding for the sake of it and not to go somewhere.
+  
+  **To convert casual riders into annual members**, it would be good to make it known to them how beneficial these bikes are for commuters. So, when a rider rents a bike at any station which commuters use, they can be shown which locations commuters often commute to from that station, how long it takes them and how far it is.
+
+## Formatting data for Tableau
+
+To demonstrate what sort of information could be shown to riders, I will use the top 10 casual rider stations.
+
+```{r}
+q <- "
+SELECT start_station_name, COUNT(*)
+FROM bike_data
+WHERE member_casual = 'casual' AND start_station_name IS NOT NULL
+GROUP BY 1
+ORDER BY COUNT(*) DESC
+LIMIT 10
+"
+top_casual_stations_df <- dbGetQuery(db, q)
+top_casual_stations_df
+```
+
+```{r}
+# for any supplied station and list of routes, this function will return the top routes that station appears in (either start or end)
+get_top_routes <- function(station, max_results, top_routes) {
+  # initialize results to be dataframe of similar structure as routes
+  results <- data.frame(matrix(ncol = ncol(top_routes) + 1, nrow = 0))
+  colnames(results) <- c("rank", colnames(top_routes)) 
+  for (i in 1:nrow(top_routes)) {
+    if (station == top_routes$start_station_name[i]) {
+      results <- rbind(results, top_routes[i, , drop = FALSE])
+    }
+    if (nrow(results) >= max_results) {
+      break
+    }
+  }
+  return(results)
+}
+```
+
+```{r}
+# initialize dataframe with route information for all top casual stations
+top_station_routes <- data.frame(matrix(ncol = ncol(top_routes) + 1, nrow = 0))
+colnames(top_station_routes) <- c("rank", colnames(top_routes))
+
+# go through top casual stations, get top 5 member routes for each one,
+# combine into single dataframe
+for (i in 1:nrow(top_casual_stations_df)) {
+  station <- top_casual_stations_df$start_station_name[i]
+  station_routes <- get_top_routes(station, 5, top_routes)
+  station_routes$rank <- i
+  top_station_routes <- rbind(top_station_routes, station_routes)
+}
+```
+
+Lastly, I'll need to transform this into a format that can be used in Tableau. 
+
+```{r}
+# pivot the stations data long to create separate start and end station rows
+tableau_data <- pivot_longer(top_station_routes,
+                        cols = c(start_station_name, end_station_name),
+                        names_to = "origin_destination",
+                        values_to = "station")
+
+# set start stations to "origin", end stations to "destination" based on start or end station
+tableau_data <- mutate(tableau_data, origin_destination = ifelse(origin_destination == "start_station_name", "origin", "destination"))
+
+# set correct latitude and longitude based on origin_destination
+tableau_data <- mutate(tableau_data,
+                  latitude = ifelse(origin_destination == "origin", start_lat, end_lat),
+                  longitude = ifelse(origin_destination == "origin", start_lng, end_lng))
+
+
+
+
+# Reorder the columns as desired
+tableau_data <- tableau_data[, c("rank", "origin_destination", "station", "route", "latitude", "longitude", "avg_distance_km", "avg_time_mins")]
+
+head(tableau_data)
+```
+
+```{r}
+# write_csv(tableau_data, "tableau_data.csv")
+```
+
+
+View the visualization [here](https://public.tableau.com/app/profile/john.parchment/viz/GoogleBikeShareAnalysis/Dashboard1?publish=yes).
+
