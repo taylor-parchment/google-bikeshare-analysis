@@ -38,7 +38,7 @@ library(RSQLite)
 db <- dbConnect(RSQLite::SQLite(), "")
 
 # import first month's data
-df <- read_csv("/Users/taylorparchment/Desktop/google_data/202205-divvy-tripdata.csv", show_col_types = FALSE)
+df <- read_csv("/Users/taylorparchment/Documents/Analysis/Data/google_data/202205-divvy-tripdata.csv", show_col_types = FALSE)
 # convert dataframe's date to character before converting to SQL table
 df$started_at <- as.character(df$started_at)
 df$ended_at <- as.character(df$ended_at)
@@ -48,7 +48,7 @@ dbWriteTable(db, "bike_data", df)
 months <- c("202206", "202207", "202208", "202209", "202210", "202211", "202212", "202301", "202302", "202303", "202304")
 # append created SQL table with each month's bike data
 for (month in months) {
-  filepath <- paste0("/Users/taylorparchment/Desktop/google_data/", month, "-divvy-tripdata.csv")
+  filepath <- paste0("/Users/taylorparchment/Documents/Analysis/Data/google_data/", month, "-divvy-tripdata.csv")
   df <- read_csv(filepath, show_col_types = FALSE)
   df$started_at <- as.character(df$started_at)
   df$ended_at <- as.character(df$ended_at)
@@ -622,8 +622,8 @@ ggplot(distance_df, aes(x = distance_km, fill = member_casual)) +
   facet_wrap(~member_casual) +
   labs(title = "Distribution of Ride Distances",
        subtitle = "Members vs. Casual Riders",
-       x = "Number of Rides",
-       y = "Distance (km)",
+       y = "Number of Rides",
+       x = "Distance (km)",
        fill = "Member Type")
   theme(legend.position="bottom")
 ```
