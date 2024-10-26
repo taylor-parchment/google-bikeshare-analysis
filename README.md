@@ -40,4 +40,11 @@ where started_at and ended_at are date-time values.
 
 - There isn’t a significant difference in distance covered by members or casual riders, however casual riders more often return to their station of origin, probably only riding for the sake of it and not to go somewhere.
 
+![image](https://github.com/user-attachments/assets/9ff4a7eb-a68a-44f2-9872-7445bfea05fd)
+
+
 ## Recommendations
+
+- To convert casual riders into annual members, it would be good to make it known to them how beneficial these bikes are for commuters. So, when a rider rents a bike at any station which commuters use, they can be shown which locations commuters often commute to from that station, how long it takes them and how far it is. This can be seen in this [Tableau visualization](https://public.tableau.com/app/profile/john.parchment/viz/GoogleBikeShareAnalysis/Dashboard1?publish=yes), which shows the most popular route from the most popular casual rider stations. This will give casual riders an idea of the utility of being a member.
+
+- The most popular time of year for casual riders are spring and summer months, so that would be the best time to focus on ad campaigns and membership deals. A summer discount or trial offer on memberships would be a great way to get casual members to try out a membership.
